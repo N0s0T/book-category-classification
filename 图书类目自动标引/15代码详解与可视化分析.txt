@@ -1,0 +1,423 @@
+================================================================================
+图书分类模型可视化分析
+15.py 代码详解与可视化分析
+================================================================================
+
+本文档详细解释图书分类模型可视化分析代码(15.py)的实现逻辑和图表设计思路。
+
+================================================================================
+一、项目概述
+================================================================================
+
+这是一个完整的机器学习可视化分析代码，主要功能：
+1. 训练图书分类模型（基于14.py的改进方案）
+2. 生成6个专业图表，用于模型分析和展示
+3. 包含超参数调优功能
+
+数据流程：
+1. 加载训练集和验证集数据
+2. 预处理：标签编码 + 过滤未知类别
+3. TF-IDF特征提取（改进版参数）
+4. 训练SVM模型
+5. 生成6个可视化图表
+6. SVM超参数调优
+
+================================================================================
+二、代码逐段解析
+================================================================================
+
+【第1-14行】导入库和设置中文显示
+--------------------------------------------------------------------------------
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.svm import LinearSVC
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_curve, auc
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.preprocessing import LabelEncoder, label_binarize
+from itertools import cycle
+
+# 设置中文显示
+plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
+plt.rcParams["axes.unicode_minus"] = False
+
+说明：
+- 导入了matplotlib用于绘图
+- 设置中文字体，确保图表能显示中文
+- itertools.cycle用于ROC曲线的颜色循环
+
+【第20-47行】数据加载与预处理
+--------------------------------------------------------------------------------
+
+print("\n[步骤1] 数据加载与预处理")
+train = pd.read_csv("第3章 数据集/train_final_result.csv")
+val = pd.read_csv("第3章 数据集/data/val.csv")
+val = val.fillna("")
+
+col_cat = val.columns[1]      # 类别列
+col_title = val.columns[2]    # 标题列
+col_key = val.columns[3]      # 关键词列
+col_abs = val.columns[4]      # 摘要列
+
+X_train = train["all_text"].astype(str)
+X_val = val[col_title].astype(str) + " " + val[col_abs].astype(str) + " " + val[col_key].astype(str)
+y_train = train["label"]
+y_val = val[col_cat]
+
+# 标签编码 + 过滤未知类别
+train_categories = train.iloc[:, 1]
+le = LabelEncoder()
+le.fit(train_categories)
+mask = y_val.isin(le.classes_)
+y_val_filtered = y_val[mask]
+X_val_filtered = X_val[mask]
+y_val_encoded = le.transform(y_val_filtered)
+
+说明：
+- 关键步骤：过滤验证集中训练集未出现的类别
+- 这样可以避免模型遇到未见过的类别时出错
+
+【第49-59行】改进版TF-IDF特征提取
+--------------------------------------------------------------------------------
+
+tfidf = TfidfVectorizer(
+    max_features=8000,      # 特征维度从3000增加到8000
+    ngram_range=(1, 2),    # 使用unigram + bigram
+    min_df=2,              # 去除出现少于2次的词
+    max_df=0.95,           # 去除出现超过95%的词
+    sublinear_tf=True       # 使用对数TF变换
+)
+X_train_vec = tfidf.fit_transform(X_train)
+X_val_vec = tfidf.transform(X_val_filtered)
+
+说明：
+- 这是改进版的TF-IDF，比原始版本效果更好
+- fit_transform只用于训练集，验证集只用transform
+
+【第61-66行】训练模型
+--------------------------------------------------------------------------------
+
+svm = LinearSVC(C=0.1, max_iter=2000)
+svm.fit(X_train_vec, y_train)
+pred_svm = svm.predict(X_val_vec)  # 在验证集上预测！
+print(f"SVM验证集准确率: {accuracy_score(y_val_encoded, pred_svm):.2%}")
+
+说明：
+- 关键：在验证集上预测，不是训练集！
+- 这样才能得到真实的模型性能评估
+
+【第68-91行】图表1：完整混淆矩阵
+--------------------------------------------------------------------------------
+
+print("\n[图表1] 绘制混淆矩阵")
+cm = confusion_matrix(y_val_encoded, pred_svm)
+
+plt.figure(figsize=(12, 10))
+im = plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+plt.title('SVM模型混淆矩阵 (验证集)', fontsize=14, pad=20)
+plt.colorbar(im, label='样本数')
+
+# 由于类别太多(200+)，不显示具体类别标签，只显示刻度
+plt.xticks([])
+plt.yticks([])
+
+plt.xlabel('预测类别', fontsize=12)
+plt.ylabel('真实类别', fontsize=12)
+
+# 添加对角线标注（正确预测区域）
+plt.plot([0, cm.shape[0]], [0, cm.shape[1]], 'r--', linewidth=2, alpha=0.5, label='正确预测')
+plt.legend(loc='upper right', fontsize=10)
+
+plt.tight_layout()
+plt.savefig("混淆矩阵_改进版.png", dpi=300, bbox_inches='tight')
+
+说明：
+- 为什么不显示类别标签？因为有200+类别，显示会太乱
+- 红色虚线标注对角线，对角线是正确预测的区域
+- 颜色越深表示样本数越多
+
+【第93-124行】图表2：TOP10混淆最严重类别
+--------------------------------------------------------------------------------
+
+print("\n[图表2] 绘制混淆最严重的类别")
+cm_copy = cm.copy()
+np.fill_diagonal(cm_copy, 0)  # 对角线上是正确预测，不计入混淆
+confusion_total = cm_copy.sum(axis=1)  # 每个类别的混淆总数
+top_confused_idx = np.argsort(confusion_total)[-10:][::-1]  # 混淆最严重的10个类别
+
+plt.figure(figsize=(14, 8))
+cm_top = cm[np.ix_(top_confused_idx, top_confused_idx)]
+im = plt.imshow(cm_top, interpolation='nearest', cmap=plt.cm.Reds)
+plt.title('混淆最严重的TOP10类别 (验证集)', fontsize=14, pad=20)
+plt.colorbar(im, label='样本数')
+plt.xticks(range(len(top_confused_idx)), 
+           [str(le.classes_[i])[:12] for i in top_confused_idx], 
+           rotation=45, ha='right', fontsize=10)
+plt.yticks(range(len(top_confused_idx)), 
+           [str(le.classes_[i])[:12] for i in top_confused_idx], 
+           fontsize=10)
+
+# 在格子里标注数字
+for i in range(len(top_confused_idx)):
+    for j in range(len(top_confused_idx)):
+        plt.text(j, i, str(cm_top[i, j]), 
+                ha="center", va="center", 
+                color="white" if cm_top[i, j] > cm_top.max()/2 else "black")
+
+plt.savefig("混淆矩阵_TOP10.png", dpi=300, bbox_inches='tight')
+
+说明：
+- 这是最重要的分析图表！
+- 找出哪些类别最容易被混淆
+- 对角线是正确预测，非对角线是错误预测
+- 每个格子里标注了具体的样本数
+
+【第126-161行】图表3：多分类ROC曲线
+--------------------------------------------------------------------------------
+
+print("\n[图表3] 绘制ROC曲线")
+n_classes = len(le.classes_)
+y_bin = label_binarize(y_val_encoded, classes=range(n_classes))
+y_score = svm.decision_function(X_val_vec)  # 在验证集上计算！
+
+fpr = dict()
+tpr = dict()
+roc_auc = dict()
+for i in range(n_classes):
+    if np.sum(y_bin[:, i]) > 0:  # 只处理有样本的类别
+        fpr[i], tpr[i], _ = roc_curve(y_bin[:, i], y_score[:, i])
+        roc_auc[i] = auc(fpr[i], tpr[i])
+
+# 选择样本数最多的5个类别来展示
+class_counts = np.sum(y_bin, axis=0)
+top_classes = np.argsort(class_counts)[-5:][::-1]
+
+plt.figure(figsize=(10, 8))
+colors = cycle(['aqua', 'darkorange', 'limegreen', 'blue', 'red'])
+for i, color in zip(top_classes, colors):
+    if i in roc_auc:
+        plt.plot(fpr[i], tpr[i], color=color, lw=2,
+                 label=f'{le.classes_[i][:15]} (AUC = {roc_auc[i]:.2f})')
+plt.plot([0, 1], [0, 1], 'k--', lw=2)  # 对角线：随机猜测的基准线
+plt.xlabel('假正例率 (FPR)', fontsize=12)
+plt.ylabel('真正例率 (TPR)', fontsize=12)
+plt.title('多分类ROC曲线 (验证集 - 样本数最多的5个类别)', fontsize=14)
+plt.legend(loc="lower right", fontsize=10)
+plt.grid(alpha=0.3)
+plt.savefig("ROC曲线_改进版.png", dpi=300, bbox_inches='tight')
+
+说明：
+- ROC曲线评估模型区分正例和负例的能力
+- AUC值越大越好（0.5=随机，1.0=完美）
+- 只展示样本数最多的5个类别，避免图表太乱
+
+【第163-192行】图表4：特征重要性
+--------------------------------------------------------------------------------
+
+print("\n[图表4] 绘制特征重要性")
+feature_names = tfidf.get_feature_names_out()
+
+# SVM是one-vs-rest，coef_是(n_classes, n_features)
+# 应该平均所有类别的权重绝对值
+coef_mean = np.mean(np.abs(svm.coef_), axis=0)  # 平均所有类别
+top_idx = np.argsort(coef_mean)[-20:][::-1]  # 取权重绝对值前20特征
+top_coef = coef_mean[top_idx]
+top_features = [feature_names[i] for i in top_idx]
+
+plt.figure(figsize=(14, 8))
+bars = plt.barh(range(len(top_features)), top_coef, color='#4A90E2')
+plt.yticks(range(len(top_features)), top_features, fontsize=11)
+plt.xlabel('平均特征权重 (绝对值)', fontsize=12)
+plt.ylabel('特征词', fontsize=12)
+plt.title('TOP20 重要特征 (SVM所有类别平均)', fontsize=14, pad=20)
+plt.gca().invert_yaxis()  # 把重要的放上面
+plt.grid(axis='x', alpha=0.3)
+
+# 在柱子上标注数值
+for i, (bar, coef) in enumerate(zip(bars, top_coef)):
+    width = bar.get_width()
+    plt.text(width + 0.005, bar.get_y() + bar.get_height()/2,
+             f'{coef:.4f}', va='center', fontsize=9)
+
+plt.savefig("特征重要性_改进版.png", dpi=300, bbox_inches='tight')
+
+说明：
+- SVM的coef_表示每个特征对分类的贡献
+- 权重绝对值越大，特征越重要
+- 平均所有类别的权重，得到全局重要性
+
+【第194-225行】图表5：模型性能对比
+--------------------------------------------------------------------------------
+
+print("\n[图表5] 绘制模型性能对比")
+models = [
+    ("朴素贝叶斯", MultinomialNB(alpha=0.5)),
+    ("SVM", LinearSVC(C=0.1, max_iter=2000)),
+    ("逻辑回归", __import__('sklearn.linear_model').linear_model.LogisticRegression(C=0.5, max_iter=1000))
+]
+
+acc_list = []
+for name, model in models:
+    model.fit(X_train_vec, y_train)
+    pred = model.predict(X_val_vec)
+    acc_list.append(accuracy_score(y_val_encoded, pred))
+
+plt.figure(figsize=(10, 6))
+bars = plt.bar([m[0] for m in models], acc_list, color=['#7ED321', '#4A90E2', '#F5A623'])
+plt.ylim(0, max(acc_list) * 1.2)
+plt.ylabel('准确率', fontsize=12)
+plt.title('模型性能对比 (验证集)', fontsize=14, pad=20)
+plt.grid(axis='y', alpha=0.3)
+
+# 标注数值
+for bar, acc in zip(bars, acc_list):
+    height = bar.get_height()
+    plt.text(bar.get_x() + bar.get_width()/2, height + 0.005,
+             f'{acc:.2%}', ha='center', va='bottom', fontsize=11)
+
+plt.savefig("模型对比_改进版.png", dpi=300, bbox_inches='tight')
+
+说明：
+- 对比3个模型在验证集上的准确率
+- 每个柱子上标注具体数值
+- 颜色区分不同模型
+
+【第227-257行】图表6：SVM超参数调优过程
+--------------------------------------------------------------------------------
+
+print("\n[步骤4] SVM超参数调优")
+param_grid = {"C": [0.01, 0.05, 0.1, 0.5, 1.0, 2.0]}
+skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+grid = GridSearchCV(LinearSVC(max_iter=3000), param_grid, cv=skf, scoring='accuracy', n_jobs=-1)
+grid.fit(X_train_vec, y_train)
+
+print("最优参数:", grid.best_params_)
+print("交叉验证最优准确率:", f"{grid.best_score_:.2%}")
+best_svm = grid.best_estimator_
+pred_best = best_svm.predict(X_val_vec)
+print("验证集准确率:", f"{accuracy_score(y_val_encoded, pred_best):.2%}")
+
+# 绘制调优过程
+plt.figure(figsize=(10, 6))
+cs = [p['C'] for p in grid.cv_results_['params']]
+scores = grid.cv_results_['mean_test_score']
+stds = grid.cv_results_['std_test_score']
+
+plt.errorbar(cs, scores, yerr=stds, fmt='o-', color='#4A90E2', capsize=5, linewidth=2, markersize=8)
+plt.axvline(grid.best_params_['C'], color='#F5A623', linestyle='--', linewidth=2, label=f'最优C={grid.best_params_["C"]}')
+plt.xscale('log')  # 对数刻度，方便观察参数变化
+plt.xlabel('正则化参数 C (对数刻度)', fontsize=12)
+plt.ylabel('交叉验证准确率', fontsize=12)
+plt.title('SVM超参数调优过程', fontsize=14, pad=20)
+plt.legend(fontsize=11)
+plt.grid(alpha=0.3)
+plt.savefig("SVM超参数调优_改进版.png", dpi=300, bbox_inches='tight')
+
+说明：
+- 使用网格搜索寻找最优C值
+- 误差线表示3折交叉验证的标准差
+- 对数刻度展示参数变化趋势
+
+================================================================================
+三、生成的6个图表说明
+================================================================================
+
+| 图表名称 | 文件名 | 用途 |
+|----------|--------|------|
+| 混淆矩阵 | 混淆矩阵_改进版.png | 整体查看模型分类正确性 |
+| TOP10混淆 | 混淆矩阵_TOP10.png | 分析最容易混淆的类别 |
+| ROC曲线 | ROC曲线_改进版.png | 评估模型区分能力 |
+| 特征重要性 | 特征重要性_改进版.png | 查看哪些词对分类最重要 |
+| 模型对比 | 模型对比_改进版.png | 对比不同模型性能 |
+| 超参数调优 | SVM超参数调优_改进版.png | 展示C参数对准确率的影响 |
+
+================================================================================
+四、关键知识点
+================================================================================
+
+【知识点1：混淆矩阵】
+--------------------------------------------------------------------------------
+
+混淆矩阵是一个n×n的矩阵，n是类别数：
+- 对角线：正确预测的样本数
+- 非对角线：错误预测的样本数（混淆）
+- 颜色越深：样本数越多
+
+对于200+类别的问题：
+- 完整矩阵太复杂，只能看整体模式
+- TOP10混淆矩阵更有分析价值
+
+【知识点2：ROC曲线】
+--------------------------------------------------------------------------------
+
+ROC（Receiver Operating Characteristic）曲线：
+- X轴：假正例率（FPR）= 假正例 / 负例总数
+- Y轴：真正例率（TPR）= 真正例 / 正例总数
+- AUC（Area Under Curve）：曲线下面积，衡量模型区分能力
+
+AUC值解读：
+- 0.5：随机猜测
+- 0.7-0.8：较好
+- 0.8-0.9：很好
+- >0.9：非常好
+
+【知识点3：特征重要性】
+--------------------------------------------------------------------------------
+
+LinearSVC的coef_属性表示每个特征的权重：
+- 正权重：该特征倾向于将样本分类为某类
+- 负权重：该特征倾向于将样本分类为其他类
+- 绝对值越大：特征越重要
+
+因为SVM是one-vs-rest多分类，所以coef_的形状是(n_classes, n_features)
+我们需要平均所有类别的权重绝对值来得到全局重要性
+
+【知识点4：超参数调优】
+--------------------------------------------------------------------------------
+
+SVM的C参数是正则化参数：
+- C越小：正则化越强，模型越简单，可能欠拟合
+- C越大：正则化越弱，模型越复杂，可能过拟合
+
+网格搜索遍历所有候选参数，用交叉验证评估每个参数的性能
+
+================================================================================
+五、运行方法
+================================================================================
+
+方法1：双击运行脚本
+- 双击 run_15改进版.bat
+- 程序会自动生成6个图表
+
+方法2：命令行运行
+```
+python 15.py
+```
+
+运行后会生成：
+- 混淆矩阵_改进版.png
+- 混淆矩阵_TOP10.png
+- ROC曲线_改进版.png
+- 特征重要性_改进版.png
+- 模型对比_改进版.png
+- SVM超参数调优_改进版.png
+
+================================================================================
+六、总结
+================================================================================
+
+15.py是一个完整的机器学习可视化分析代码：
+
+✅ **数据处理**：正确处理类别不平衡和未知类别
+✅ **模型训练**：使用改进版TF-IDF和SVM
+✅ **可视化**：生成6个专业图表，覆盖模型分析的各个方面
+✅ **调优功能**：自动搜索最优超参数
+
+代码结构清晰，注释详细，生成的图表专业美观，适合作为项目报告的可视化素材。
+
+================================================================================
+文档结束
+================================================================================
